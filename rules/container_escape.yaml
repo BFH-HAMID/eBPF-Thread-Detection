@@ -1,0 +1,85 @@
+# Container escape indicators
+#
+# MITRE ATT&CK: TA0005 Defense Evasion / TA0007 Discovery
+# Techniques: T1611 (Escape to Host), T1610 (Deploy Container),
+# T1543.002 (Systemd Service), T1552.004 (Unsecured Credentials)
+
+- id: SENTINEL-030
+  name: Namespace hopping via setns
+  description: >
+    setns(2) moves a process into another namespace — nsenter(1) and most
+    escape tooling use it to reach the host namespace.
+  priority: error
+  condition: >
+    evt.type = setns
+    and proc.name not in (systemd, runc, containerd, dockerd, nsenter_helper)
+  tags: [mitre/TA0005, mitre/T1611]
+  output: "setns(fd=%sys.arg0 nstype=%sys.arg1) by %proc.name"
+
+- id: SENTINEL-031
+  name: pivot_root outside container runtime
+  description: >
+    pivot_root(2) swaps the root filesystem. Seeing it outside runc/containerd
+    is a loud escape signal (e.g. "chroot + pivot_root" host takeover).
+  priority: critical
+  condition: >
+    evt.type = pivot_root
+    and proc.name not in (runc, containerd, dockerd, crun)
+  tags: [mitre/TA0005, mitre/T1611]
+  output: "pivot_root(%sys.path -> %sys.path2) by %proc.name"
+
+- id: SENTINEL-032
+  name: Host block device or path mounted
+  description: >
+    Mounting host disks, docker.sock or /etc into a workload hands over the
+    node. cgroup mounts are the release_agent escape setup.
+  priority: critical
+  condition: >
+    evt.type = mount
+    and (mount.source in (/dev/sda, /dev/sda1, /dev/xvda, /dev/xvda1, /dev/nvme0n1,
+                          /dev/mapper, /dev/vda, /dev/vda1)
+         or mount.target contains docker.sock
+         or mount.target in (/host, /hostfs, /rootfs, /mnt/host)
+         or (mount.fstype in (cgroup, cgroup2) and container))
+  tags: [mitre/TA0005, mitre/T1611]
+  output: "suspicious mount: %mount.source -> %mount.target (%mount.fstype) by %proc.name"
+
+- id: SENTINEL-033
+  name: cgroup release_agent access
+  description: >
+    Writing the cgroup v1 release_agent (or notify_on_release) hijacks the
+    host's cgroup release handler for root code execution outside the container.
+  priority: critical
+  condition: >
+    evt.type = openat
+    and (file.path endswith /release_agent or file.path endswith /notify_on_release)
+  tags: [mitre/TA0005, mitre/T1611]
+  output: "cgroup release_agent touched: %file.path by %proc.name"
+
+- id: SENTINEL-034
+  name: Container runtime socket access
+  description: >
+    Opening docker.sock/containerd.sock from inside a workload grants root on
+    the node via the runtime API.
+  priority: critical
+  condition: >
+    evt.type = openat
+    and (file.path contains docker.sock
+         or file.path contains containerd.sock
+         or file.path contains criod.sock
+         or file.path contains podman.sock)
+  tags: [mitre/TA0005, mitre/T1611]
+  output: "container runtime socket %file.path opened by %proc.name"
+
+- id: SENTINEL-035
+  name: Escape tooling executed
+  description: Well-known escape helper binaries seen in the wild.
+  priority: error
+  condition: >
+    evt.type = execve
+    and (exec.path contains nsenter
+         or exec.path contains ctr
+         or exec.argv contains "--privileged"
+         or exec.argv contains "capsh")
+  tags: [mitre/TA0005, mitre/T1611]
+  output: "escape tooling: %exec.path %exec.argv (comm=%proc.name)"

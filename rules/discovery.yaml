@@ -1,0 +1,46 @@
+# Host reconnaissance & suspicious tooling
+#
+# MITRE ATT&CK: TA0007 Discovery
+# Techniques: T1082 (System Information Discovery), T1083 (File and Directory
+# Discovery), T1046 (Network Service Discovery)
+
+- id: SENTINEL-040
+  name: Discovery command burst
+  description: >
+    Classic enumeration binaries executed by a workload (often in a burst
+    right after an initial foothold).
+  priority: notice
+  condition: >
+    evt.type = execve
+    and exec.path in (/usr/bin/whoami, /usr/bin/id, /bin/uname, /usr/bin/uname,
+                      /usr/bin/env, /usr/bin/printenv, /usr/bin/hostname,
+                      /usr/sbin/ifconfig, /usr/sbin/ip, /bin/ps, /usr/bin/ps,
+                      /usr/bin/w, /usr/bin/last)
+  tags: [mitre/TA0007, mitre/T1082]
+  output: "discovery: %exec.path by %proc.name (uid=%proc.uid)"
+
+- id: SENTINEL-041
+  name: Outbound connection from scripting interpreter
+  description: >
+    Python/Perl/Ruby/PHP opening outbound sockets — common stager behaviour.
+  priority: warning
+  condition: >
+    evt.type = connect
+    and proc.name in (python, python2, python3, perl, ruby, php, node)
+    and net.family in (inet, inet6)
+  tags: [mitre/TA0011, mitre/T1059]
+  output: "script interpreter %proc.name connected to %net.addr:%net.port"
+
+- id: SENTINEL-042
+  name: Mass file discovery reads
+  description: >
+    Cheap heuristic: /etc/passwd + /etc/hosts + /proc reads in one window is
+    usually enumeration. (Best combined with the ML risk score.)
+  priority: notice
+  condition: >
+    evt.type = openat
+    and file.path in (/etc/passwd, /etc/hosts, /etc/hostname, /proc/net/tcp,
+                      /proc/net/fib_trie, /proc/cpuinfo, /proc/version)
+    and proc.name not in (dpkg, rpm, apt, glibc-zoneinfo, ldconfig)
+  tags: [mitre/TA0007, mitre/T1083]
+  output: "enumeration read %file.path by %proc.name"

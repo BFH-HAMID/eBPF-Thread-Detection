@@ -1,0 +1,32 @@
+image:
+  repository: ghcr.io/bfh-hamid/sentinel
+  tag: latest
+  pullPolicy: Always
+
+# Rule files are mounted from this ConfigMap (created from rules/*.yaml).
+rules:
+  configMapName: sentinel-rules
+
+agent:
+  emitEvents: false
+  ringBufMiB: 16
+  windowSecs: 60
+  logLevel: info
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: "1"
+    memory: 256Mi
+
+# Phase 5: Prometheus metrics endpoint.
+metrics:
+  enabled: false
+  port: 9095
+
+tolerations:
+  - operator: Exists
+
+priorityClassName: system-node-critical

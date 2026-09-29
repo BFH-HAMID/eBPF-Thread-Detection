@@ -1,0 +1,87 @@
+# Sentinel DaemonSet: one agent per node, eBPF tracing with the minimum
+# capability set (Falco/Tetragon style).
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: sentinel
+  namespace: sentinel-system
+  labels:
+    app.kubernetes.io/name: sentinel
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sentinel
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sentinel
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9095"
+    spec:
+      hostPID: true
+      serviceAccountName: sentinel
+      priorityClassName: system-node-critical
+      tolerations:
+        - operator: Exists   # run on every node, including control plane
+      containers:
+        - name: sentinel
+          image: ghcr.io/bfh-hamid/sentinel:latest
+          imagePullPolicy: Always
+          args:
+            - --rules
+            - /etc/sentinel/rules
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              add:
+                - BPF           # bpf() syscall (kernel >= 5.8)
+                - PERFMON       # perf_event_open / tracepoints
+                - SYS_RESOURCE  # RLIMIT_MEMLOCK
+                - SYS_PTRACE    # optional: attach to host processes
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          volumeMounts:
+            - name: btf
+              mountPath: /sys/kernel/btf/vmlinux
+              readOnly: true
+            - name: cgroup
+              mountPath: /sys/fs/cgroup
+              readOnly: true
+            - name: debugfs
+              mountPath: /sys/kernel/debug
+              readOnly: true
+            - name: rules
+              mountPath: /etc/sentinel/rules
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: btf
+          hostPath:
+            path: /sys/kernel/btf/vmlinux
+            type: File
+        - name: cgroup
+          hostPath:
+            path: /sys/fs/cgroup
+            type: Directory
+        - name: debugfs
+          hostPath:
+            path: /sys/kernel/debug
+            type: DirectoryOrCreate
+        - name: rules
+          configMap:
+            name: sentinel-rules
+        - name: tmp
+          emptyDir: {}
