@@ -248,7 +248,7 @@ impl FieldLookup for EventContext {
             "sys.arg0" => match e {
                 Event::Ptrace { request, .. } => Val::Int(*request as i64),
                 Event::Setns { fd, .. } => Val::Int(*fd as i64),
-                Event::Unshare { flags } => Val::Int(*flags as i64),
+                Event::Unshare { flags, .. } => Val::Int(*flags as i64),
                 _ => return None,
             },
             "sys.arg1" => match e {
@@ -602,7 +602,7 @@ mod tests {
     #[test]
     fn rejects_wrong_sizes() {
         assert!(decode(&[]).is_none());
-        assert!(decode(&[EVENT_EXECVE, 0, 0, 0]).is_none());
+        assert!(decode(&EVENT_EXECVE.to_ne_bytes()[..1]).is_none());
     }
 
     #[test]

@@ -15,9 +15,9 @@ fn main() {
     // Note: this is only a cache-invalidation aid. Degrade gracefully when
     // `bpf-linker` is not installed (e.g. host-side `cargo test`/`clippy` runs
     // with AYA_BUILD_SKIP=1 that never build the bpfel target).
-    if let Ok(bpf_linker) = which("bpf-linker") {
-        if let Some(path) = bpf_linker.to_str() {
-            println!("cargo:rerun-if-changed={path}");
-        }
+    if let Ok(bpf_linker) = which("bpf-linker")
+        && let Some(path) = bpf_linker.to_str()
+    {
+        println!("cargo:rerun-if-changed={path}");
     }
 }

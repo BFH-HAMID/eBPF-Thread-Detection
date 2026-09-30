@@ -143,7 +143,7 @@ pub fn probe_identities(ebpf: &Ebpf) -> Vec<crate::tamper::ProbeRecord> {
         let Ok(fd) = p.fd() else {
             continue;
         };
-        let raw = fd.as_raw_fd();
+        let raw = std::os::fd::AsFd::as_fd(fd).as_raw_fd();
         if let Some(prog_id) = crate::tamper::read_fdinfo_id(raw) {
             out.push(crate::tamper::ProbeRecord {
                 name: prog.to_string(),

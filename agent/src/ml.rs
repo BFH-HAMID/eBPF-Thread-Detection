@@ -109,8 +109,9 @@ pub struct OnnxScorer {
 #[cfg(feature = "onnx")]
 impl OnnxScorer {
     pub fn load(path: &std::path::Path) -> anyhow::Result<Self> {
-        let env = ort::init().map_err(|e| anyhow::anyhow!("ort init: {e}"))?;
-        let session = ort::session::Session::builder(&env)
+        // rc.13 uses a global environment; commit() is idempotent.
+        ort::init().commit();
+        let session = ort::session::Session::builder()
             .map_err(|e| anyhow::anyhow!("ort session builder: {e}"))?
             .commit_from_file(path)
             .map_err(|e| anyhow::anyhow!("loading {}: {e}", path.display()))?;
@@ -169,8 +170,8 @@ impl SequenceScorer {
         vocab: &std::path::Path,
         max_len: usize,
     ) -> anyhow::Result<Self> {
-        let env = ort::init().map_err(|e| anyhow::anyhow!("ort init: {e}"))?;
-        let session = ort::session::Session::builder(&env)
+        ort::init().commit();
+        let session = ort::session::Session::builder()
             .map_err(|e| anyhow::anyhow!("ort session builder: {e}"))?
             .commit_from_file(model)
             .map_err(|e| anyhow::anyhow!("loading {}: {e}", model.display()))?;

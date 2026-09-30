@@ -494,6 +494,15 @@ impl Value {
             Value::Int(i) => i.to_string(),
         }
     }
+
+    /// Numeric interpretation of the literal (string literals parse too, so
+    /// `net.port < 1024` works regardless of how the lexer tagged it).
+    fn as_int(&self) -> Option<i64> {
+        match self {
+            Value::Int(i) => Some(*i),
+            Value::Str(s) => s.parse().ok(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

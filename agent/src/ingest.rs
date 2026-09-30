@@ -202,9 +202,11 @@ pub async fn run(
                 // Aggregate per-cgroup byte counters into the metrics totals.
                 if let Some(stats) = &byte_stats {
                     let (mut ingress, mut egress) = (0u64, 0u64);
-                    for (_k, v) in stats.iter() {
-                        ingress = ingress.saturating_add(v.ingress);
-                        egress = egress.saturating_add(v.egress);
+                    for item in stats.iter() {
+                        if let Ok((_k, v)) = item {
+                            ingress = ingress.saturating_add(v.ingress);
+                            egress = egress.saturating_add(v.egress);
+                        }
                     }
                     pipeline
                         .metrics
