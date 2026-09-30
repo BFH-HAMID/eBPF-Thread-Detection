@@ -1,0 +1,75 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "sentinel.fullname" . }}
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "sentinel.fullname" . }}
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "sentinel.name" . }}
+  template:
+    metadata:
+      labels:
+        {{- include "sentinel.labels" . | nindent 8 }}
+    spec:
+      hostPID: true
+      serviceAccountName: {{ include "sentinel.fullname" . }}
+      priorityClassName: {{ .Values.priorityClassName }}
+      tolerations:
+        {{- toYaml .Values.tolerations | nindent 8 }}
+      containers:
+        - name: sentinel
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --rules
+            - /etc/sentinel/rules
+            - --ring-buf-mib
+            - {{ .Values.agent.ringBufMiB | quote }}
+            - --window-secs
+            - {{ .Values.agent.windowSecs | quote }}
+            {{- if .Values.agent.emitEvents }}
+            - --emit-events
+            {{- end }}
+          env:
+            - name: RUST_LOG
+              value: {{ .Values.agent.logLevel | quote }}
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              add: [BPF, PERFMON, SYS_RESOURCE]
+              drop: [ALL]
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: btf
+              mountPath: /sys/kernel/btf/vmlinux
+              readOnly: true
+            - name: cgroup
+              mountPath: /sys/fs/cgroup
+              readOnly: true
+            - name: rules
+              mountPath: /etc/sentinel/rules
+              readOnly: true
+      volumes:
+        - name: btf
+          hostPath:
+            path: /sys/kernel/btf/vmlinux
+            type: File
+        - name: cgroup
+          hostPath:
+            path: /sys/fs/cgroup
+            type: Directory
+        - name: rules
+          configMap:
+            name: {{ .Values.rules.configMapName }}

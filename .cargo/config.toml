@@ -1,0 +1,4 @@
+[target."cfg(all())"]
+# Loading eBPF programs requires CAP_BPF/CAP_PERFMON (or root). `cargo run`
+# and `cargo test` therefore execute the agent under sudo by default.
+runner = "sudo -E"

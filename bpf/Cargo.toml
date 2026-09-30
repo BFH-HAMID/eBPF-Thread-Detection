@@ -1,0 +1,22 @@
+[package]
+name = "sentinel-ebpf"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Sentinel eBPF probes (kernel side, built for bpfel-unknown-none)"
+
+[dependencies]
+sentinel-common = { path = "common" }
+
+aya-ebpf = { workspace = true }
+aya-log-ebpf = { workspace = true }
+
+[build-dependencies]
+which = { workspace = true }
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "sentinel"
+path = "src/main.rs"

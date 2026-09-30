@@ -1,0 +1,51 @@
+# Privilege escalation indicators
+#
+# MITRE ATT&CK: TA0004 Privilege Escalation
+# Techniques: T1055 (Process Injection), T1548.003 (Sudo and Sudo Caching),
+# T1611 (Escape to Host), T1134 (Access Token Manipulation)
+
+- id: SENTINEL-020
+  name: Process memory injection via ptrace
+  description: >
+    ptrace(2) with POKETEXT/POKEDATA/POKEUSER writes another process's memory,
+    the core of process injection. ATTACH/SEIZE from unexpected parents is also
+    flagged.
+  priority: critical
+  condition: >
+    evt.type = ptrace
+    and sys.arg0 in (4, 5, 6, 16, 0x4206)
+  tags: [mitre/TA0004, mitre/T1055]
+  output: "ptrace request=%sys.arg0 target=%sys.arg1 by %proc.name (uid=%proc.uid)"
+
+- id: SENTINEL-021
+  name: User namespace creation
+  description: >
+    unshare(CLONE_NEWUSER) (alone or with CLONE_NEWNS) is the entry point of
+    most container escapes and unprivileged sandbox breaks.
+  priority: error
+  condition: >
+    evt.type = unshare
+    and sys.arg0 in (268435456, 268566528, 268435457, 268566529)
+  tags: [mitre/TA0004, mitre/T1611]
+  output: "user namespace created (flags=%sys.arg0) by %proc.name"
+
+- id: SENTINEL-022
+  name: Capability set modification
+  description: >
+    capset(2) is rare in production workloads; any occurrence deserves review,
+    especially outside package managers.
+  priority: warning
+  condition: evt.type = capset and proc.name not in (sudo, su, newuidmap, newgidmap, ping, passwd)
+  tags: [mitre/TA0004, mitre/T1134]
+  output: "capability set modified by %proc.name (uid=%proc.uid)"
+
+- id: SENTINEL-023
+  name: Sudo/su execution from a container
+  description: Privilege-granting binaries executed inside a container workload.
+  priority: warning
+  condition: >
+    evt.type = execve
+    and container
+    and exec.path in (/usr/bin/sudo, /bin/su, /usr/bin/su, /usr/bin/doas)
+  tags: [mitre/TA0004, mitre/T1548.003]
+  output: "%exec.path executed in container %container.id by %proc.name"

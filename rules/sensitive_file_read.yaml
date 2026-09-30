@@ -1,0 +1,52 @@
+# Sensitive file access
+#
+# MITRE ATT&CK: TA0006 Credential Access / TA0007 Discovery
+# Techniques: T1003 (OS Credential Dumping), T1552.004 (Private Keys), T1082 (System Info Discovery)
+
+- id: SENTINEL-010
+  name: Read of credential material
+  description: Shadow, sudoers, SSH keys or cloud credentials opened for read.
+  priority: error
+  condition: >
+    evt.type = openat
+    and file.path in (/etc/shadow, /etc/gshadow, /etc/sudoers, /etc/ssh/ssh_host_rsa_key,
+                      /root/.ssh/id_rsa, /root/.ssh/id_ed25519, /root/.ssh/authorized_keys,
+                      /root/.aws/credentials, /root/.kube/config,
+                      /run/secrets/kubernetes.io/serviceaccount/token)
+    and proc.uid != 0
+  tags: [mitre/TA0006, mitre/T1003, mitre/T1552.004]
+  output: "credential file %file.path opened by uid=%proc.uid (%proc.name)"
+
+- id: SENTINEL-011
+  name: SSH private key access
+  description: Any read of an SSH private key under a home directory.
+  priority: warning
+  condition: >
+    evt.type = openat
+    and (file.path contains "/.ssh/" and (file.path contains id_rsa or file.path contains id_ed25519 or file.path contains id_ecdsa))
+  tags: [mitre/TA0006, mitre/T1552.004]
+  output: "SSH key %file.path accessed by %proc.name"
+
+- id: SENTINEL-012
+  name: Host filesystem access via /proc/<pid>/root
+  description: >
+    Opening a path under /proc/<pid>/root reaches into another process's
+    mount namespace — a container-escape primitive for reading host files.
+  priority: critical
+  condition: >
+    evt.type = openat
+    and file.path startswith /proc/
+    and file.path contains /root
+  tags: [mitre/TA0005, mitre/T1611]
+  output: "cross-namespace file access %file.path by %proc.name"
+
+- id: SENTINEL-013
+  name: Cloud metadata service access
+  description: >
+    Read of the instance metadata service from inside a workload usually
+    means credential theft (T1552.005).
+  priority: error
+  condition: >
+    evt.type = connect and net.addr = 169.254.169.254
+  tags: [mitre/TA0006, mitre/T1552.005]
+  output: "cloud metadata access by %proc.name (uid=%proc.uid)"

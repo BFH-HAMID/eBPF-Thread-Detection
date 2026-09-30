@@ -1,0 +1,59 @@
+name: Kernel matrix
+
+# Phase 3/5 harness: boot real kernels under virtme-ng, run the agent and the
+# attack suite, assert detections. Kept manual until the assertion harness is
+# fully wired (see docs/roadmap.md).
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 4 * * 1" # weekly
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  kernels:
+    strategy:
+      fail-fast: false
+      matrix:
+        kernel: ["5.10", "5.15", "6.1", "6.6"]
+    runs-on: ubuntu-latest
+    # The suite is informative until attacks/run_all.sh --assert is green.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: bpf-linker
+
+      - name: Install virtme-ng + kernel ${{ matrix.kernel }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pip
+          pip3 install virtme-ng
+          # Fetch a distro kernel matching the matrix entry (headers + image).
+          sudo apt-get install -y "linux-image-${{ matrix.kernel }}*"
+
+      - name: Build agent
+        run: cargo build --release -p sentinel
+
+      - name: Boot kernel ${{ matrix.kernel }} and run attack assertions
+        run: |
+          # Rule validation first (no eBPF needed).
+          ./target/release/sentinel --rules rules/ --dry-run
+          # Boot the matrix kernel under virtme-ng and run the full detection
+          # gate (agent + attacks/run_all.sh --assert) inside the guest.
+          sudo bash scripts/ci/kernel-matrix-test.sh "${{ matrix.kernel }}"
+
+      - name: Overhead baseline
+        run: |
+          sudo bench/run.sh --workload exec-flood --duration 30 || true

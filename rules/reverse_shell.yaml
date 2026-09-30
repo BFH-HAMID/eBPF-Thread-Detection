@@ -1,0 +1,60 @@
+# Reverse shell & command-and-control indicators
+#
+# MITRE ATT&CK: TA0002 Execution / TA0011 Command and Control
+# Techniques: T1059.004 (Unix Shell), T1059.006 (Python), T1571 (Non-Standard Port)
+
+- id: SENTINEL-001
+  name: Interactive shell with reverse-shell arguments
+  description: >
+    A shell interpreter is started with arguments typical of reverse shells:
+    forced interactive mode (-i), /dev/tcp redirections, or embedded commands.
+  priority: critical
+  condition: >
+    evt.type = execve
+    and proc.name in (sh, bash, dash, zsh, ash, ksh)
+    and (exec.argv contains "-i"
+         or exec.argv contains "/dev/tcp"
+         or exec.argv contains "bash -c"
+         or exec.argv contains "sh -c")
+  tags: [mitre/TA0002, mitre/T1059.004]
+  output: "possible reverse shell: %proc.name spawned with %exec.argv"
+
+- id: SENTINEL-002
+  name: Netcat-style tool with command execution
+  description: >
+    Network utilities invoked with remote-execution flags (-e/-c/exec) —
+    the classic bind/reverse shell recipe.
+  priority: critical
+  condition: >
+    evt.type = execve
+    and proc.name in (nc, ncat, netcat, socat, cryptcat, nmap)
+    and (exec.argv contains "-e"
+         or exec.argv contains "-c"
+         or exec.argv contains "exec"
+         or exec.argv contains "-i")
+  tags: [mitre/TA0011, mitre/T1059.004]
+  output: "shell-capable network tool: %proc.name %exec.argv"
+
+- id: SENTINEL-003
+  name: Shell making an outbound connection
+  description: >
+    A shell interpreter opening a socket — legitimate shells rarely call
+    connect(2) directly. Strong signal when combined with unusual ports.
+  priority: warning
+  condition: >
+    evt.type = connect
+    and proc.name in (sh, bash, dash, zsh, ash, ksh)
+    and net.family in (inet, inet6)
+    and net.port > 1024
+  tags: [mitre/TA0011, mitre/T1571]
+  output: "shell opened outbound connection to %net.addr:%net.port"
+
+- id: SENTINEL-004
+  name: Connection to known backdoor port
+  description: Destination port in the classic C2/backdoor list.
+  priority: warning
+  condition: >
+    evt.type = connect
+    and net.port in (1337, 31337, 4444, 5555, 6666, 6667, 9001, 12345)
+  tags: [mitre/TA0011, mitre/T1571]
+  output: "connection to suspicious port %net.addr:%net.port by %proc.name"

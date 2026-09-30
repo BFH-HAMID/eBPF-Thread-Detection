@@ -1,0 +1,176 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  # Userspace logic (rules engine, decoder, enrichment, features) with the
+  # eBPF build skipped: fast feedback, no nightly/bpf-linker needed.
+  test:
+    runs-on: ubuntu-latest
+    env:
+      AYA_BUILD_SKIP: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Unit tests (agent + common)
+        run: scripts/ci/run.sh test cargo test --workspace --exclude sentinel-ebpf
+
+      - name: Rule files parse (dry-run)
+        run: |
+          scripts/ci/run.sh build-dry cargo build -p sentinel
+          scripts/ci/run.sh dry-run ./target/debug/sentinel --rules rules/ --dry-run
+
+      - name: Post CI diagnostics
+        if: failure() && github.event.pull_request.number
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "### CI diagnostics — job \`test\` (run ${{ github.run_id }})"
+            echo '```'
+            tail -c 8000 target/ci-errors.log 2>/dev/null || echo "(no error file)"
+            echo '```'
+          } > /tmp/comment.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/comment.md || true
+
+  lint:
+    runs-on: ubuntu-latest
+    env:
+      AYA_BUILD_SKIP: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      # rustfmt.toml uses unstable options (group_imports, ...).
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy, rust-src
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Formatting is advisory for now (style only, not a gate).
+      - name: rustfmt (advisory)
+        continue-on-error: true
+        run: scripts/ci/run.sh fmt cargo +nightly fmt --all -- --check
+
+      - name: clippy
+        run: scripts/ci/run.sh clippy cargo clippy --workspace --exclude sentinel-ebpf --all-targets -- -D warnings
+
+      - name: Post CI diagnostics
+        if: failure() && github.event.pull_request.number
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "### CI diagnostics — job \`lint\` (run ${{ github.run_id }})"
+            echo '```'
+            tail -c 8000 target/ci-errors.log 2>/dev/null || echo "(no error file)"
+            echo '```'
+          } > /tmp/comment.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/comment.md || true
+
+  # Full build including the eBPF object (nightly + bpf-linker via aya-build).
+  ebpf-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: bpf-linker
+
+      - name: Build agent (builds sentinel-ebpf through build.rs)
+        run: scripts/ci/run.sh build-release cargo build --release -p sentinel
+
+      - name: Python pipeline syntax
+        run: scripts/ci/run.sh py-compile python3 -m py_compile ml/datasets/collect.py ml/train/train_iforest.py ml/train/train_autoencoder.py ml/train/train_ngram_lstm.py ml/export/export_onnx.py
+
+      - name: Post CI diagnostics
+        if: failure() && github.event.pull_request.number
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "### CI diagnostics — job \`ebpf-build\` (run ${{ github.run_id }})"
+            echo '```'
+            tail -c 8000 target/ci-errors.log 2>/dev/null || echo "(no error file)"
+            echo '```'
+          } > /tmp/comment.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/comment.md || true
+
+  # End-to-end detection test: load the agent on a real kernel, replay the
+  # attack suite, assert the expected rule ids fire. This is the Phase 3 gate.
+  detection:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: bpf-linker
+
+      - name: Build agent
+        run: scripts/ci/run.sh build-release cargo build --release -p sentinel
+
+      - name: Run attack suite against the agent
+        run: sudo -E scripts/ci/run.sh detect bash scripts/ci/detect-test.sh
+
+      - name: Post CI diagnostics
+        if: failure() && github.event.pull_request.number
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "### CI diagnostics — job \`detection\` (run ${{ github.run_id }})"
+            echo '```'
+            tail -c 8000 target/ci-errors.log 2>/dev/null || echo "(no error file)"
+            echo '```'
+          } > /tmp/comment.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/comment.md || true
+
+  check:
+    if: always()
+    needs: [test, lint, ebpf-build, detection]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: re-actors/alls-green@release/v1
+        with:
+          jobs: ${{ toJSON(needs) }}
+          allowed-skips: detection

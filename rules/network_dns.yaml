@@ -1,0 +1,69 @@
+# Network signals: DNS-based C2 / exfiltration and suspicious listeners
+#
+# MITRE ATT&CK: TA0010 Exfiltration / TA0011 Command and Control
+# Techniques: T1048.003 (Exfiltration Over Unencrypted Protocol),
+#             T1071.004 (DNS), T1571 (Non-Standard Port), T1572 (Protocol Tunneling)
+
+- id: SENTINEL-050
+  name: DNS query to a dynamic-DNS or free TLD
+  description: >
+    Resolvers talking to dynamic-DNS providers or bulk-abused TLDs are a
+    standing C2 pattern (T1071.004). The query name comes from the wire
+    (cgroup_skb), so raw sockets cannot hide from it.
+  priority: warning
+  condition: >
+    evt.type = dns
+    and (dns.query contains "duckdns.org"
+         or dns.query contains "no-ip"
+         or dns.query contains "hopto.org"
+         or dns.query contains "servehttp.com"
+         or dns.query endswith ".top"
+         or dns.query endswith ".xyz"
+         or dns.query endswith ".tk"
+         or dns.query endswith ".ml")
+  tags: [mitre/TA0011, mitre/T1071.004]
+  output: "possible C2 resolution: %dns.query (server %dns.server)"
+
+- id: SENTINEL-051
+  name: DNS TXT query
+  description: >
+    TXT records carry arbitrary bytes — the classic DNS exfiltration and
+    tunneling channel (T1048.003 / T1572). Rare in normal workloads.
+  priority: warning
+  condition: evt.type = dns and dns.qtype = 16
+  tags: [mitre/TA0010, mitre/T1048.003]
+  output: "DNS TXT query %dns.query from %proc.name (pid %proc.pid)"
+
+- id: SENTINEL-052
+  name: Shell performing DNS lookups
+  description: >
+    A shell directly generating DNS queries means scripted resolver abuse
+    (exfil one-liners, C2 beacons) rather than a normal application.
+  priority: warning
+  condition: >
+    evt.type = dns
+    and proc.name in (sh, bash, dash, zsh, ash, ksh, python, python3, perl, ruby)
+  tags: [mitre/TA0010, mitre/T1048.003]
+  output: "shell %proc.name queried %dns.query"
+
+- id: SENTINEL-053
+  name: Privileged port bind by non-root
+  description: >
+    Binding below port 1024 from a non-root uid means capability abuse or
+    a hijacked privileged service — listen for bind shells.
+  priority: warning
+  condition: evt.type = bind and net.port < 1024 and proc.uid != 0
+  tags: [mitre/TA0011, mitre/T1571]
+  output: "non-root bind on privileged port %net.port by %proc.name (uid %proc.uid)"
+
+- id: SENTINEL-054
+  name: Shell accepting a connection
+  description: >
+    A shell process accepting an inbound connection is a bind-shell
+    signature.
+  priority: critical
+  condition: >
+    evt.type = accept
+    and proc.name in (sh, bash, dash, zsh, ash, ksh, nc, ncat, socat, python, python3)
+  tags: [mitre/TA0011, mitre/T1571]
+  output: "bind-shell accept by %proc.name (pid %proc.pid, fd %net.fd)"
