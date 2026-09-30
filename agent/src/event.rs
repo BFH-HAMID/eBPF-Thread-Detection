@@ -639,7 +639,7 @@ mod tests {
     fn field_lookup_works() {
         let ctx = EventContext {
             event: Event::Execve {
-                header: header(EVENT_EXECVE),
+                header: decode_header(&header(EVENT_EXECVE)),
                 filename: "/usr/bin/curl".into(),
                 argv: "curl http://evil".into(),
             },

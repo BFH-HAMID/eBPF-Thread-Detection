@@ -26,7 +26,7 @@
 
 use std::{fs, path::Path};
 
-use anyhow::{Context as _, Result, anyhow, bail};
+use anyhow::{Context as _, Result, bail};
 use serde::Deserialize;
 
 // ---------------------------------------------------------------------------
@@ -175,7 +175,7 @@ fn tokenize(input: &str) -> Result<Vec<Tok>> {
                 chars.next();
                 let mut s = String::new();
                 let mut closed = false;
-                while let Some(ch) = chars.next() {
+                for ch in chars.by_ref() {
                     if ch == c {
                         closed = true;
                         break;

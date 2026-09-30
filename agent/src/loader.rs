@@ -124,7 +124,7 @@ pub fn set_filter(ebpf: &mut Ebpf, min_uid: u32, max_uid: u32) -> Result<()> {
     let mut config: aya::maps::Array<MapData, FilterConfig> =
         aya::maps::Array::try_from(map).context("CONFIG map is not an array")?;
     config
-        .set(0, &FilterConfig { min_uid, max_uid }, 0)
+        .set(0, FilterConfig { min_uid, max_uid }, 0)
         .context("writing CONFIG[0]")?;
     info!("in-kernel filter: uid range [{min_uid}, {max_uid}]");
     Ok(())

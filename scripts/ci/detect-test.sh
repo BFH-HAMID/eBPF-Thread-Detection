@@ -40,7 +40,8 @@ fi
 
 echo "== running attack suite =="
 FAILURES=0
-bash attacks/run_all.sh --assert "$OUT" || FAILURES=$?
+ASSERT_LOG="target/ci-logs/detect-asserts.log"
+bash attacks/run_all.sh --assert "$OUT" 2>&1 | tee "$ASSERT_LOG" || FAILURES=${PIPESTATUS[0]}
 
 echo "== agent summary =="
 sleep 2
@@ -48,7 +49,11 @@ kill -INT "$AGENT_PID" 2>/dev/null || true
 wait "$AGENT_PID" 2>/dev/null || true
 AGENT_PID=""
 grep '"kind":"summary"' "$OUT" || true
-grep '"kind":"alert"' "$OUT" | head -30 || true
+
+# Re-print just the assertion lines last so CI annotations see them even when
+# the alert stream is long.
+echo "== assertion results =="
+grep -E '\[PASS\]|\[FAIL\]' "$ASSERT_LOG" || true
 
 if [ "$FAILURES" -ne 0 ]; then
     echo "!! $FAILURES expected detections missing"

@@ -204,10 +204,10 @@ impl Enricher {
     }
 
     pub fn enrich(&mut self, tgid: u32) -> Enrichment {
-        if let Some((at, cached)) = self.cache.get(&tgid) {
-            if at.elapsed() < CACHE_TTL {
-                return cached.clone();
-            }
+        if let Some((at, cached)) = self.cache.get(&tgid)
+            && at.elapsed() < CACHE_TTL
+        {
+            return cached.clone();
         }
         let enrichment = self.compute(tgid);
         self.cache.insert(tgid, (Instant::now(), enrichment.clone()));
@@ -243,10 +243,10 @@ impl Enricher {
     }
 
     fn lookup_pod(&mut self, uid: &str) -> Option<PodMeta> {
-        if let Some((at, cached)) = self.pod_cache.get(uid) {
-            if at.elapsed() < POD_TTL {
-                return cached.clone();
-            }
+        if let Some((at, cached)) = self.pod_cache.get(uid)
+            && at.elapsed() < POD_TTL
+        {
+            return cached.clone();
         }
         #[cfg(feature = "k8s")]
         let meta = self.k8s.as_ref().and_then(|k| k.lookup_pod(uid));
