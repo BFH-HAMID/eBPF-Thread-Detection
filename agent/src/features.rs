@@ -27,6 +27,10 @@ pub struct FeatureVector {
     /// high entropy often means key/keystore-style access or encoded names.
     pub file_path_entropy: f64,
     pub distinct_comms: u64,
+    /// DNS queries observed (cgroup_skb capture).
+    pub dns_count: u64,
+    /// Distinct queried names — high with low connect count smells like C2.
+    pub distinct_dns_queries: u64,
 }
 
 #[derive(Debug, Default)]
@@ -40,6 +44,8 @@ struct Window {
     file_paths: BTreeSet<String>,
     path_chars: BTreeMap<u8, u64>,
     comms: BTreeSet<String>,
+    dns_count: u64,
+    dns_queries: BTreeSet<String>,
 }
 
 impl Window {
@@ -56,6 +62,8 @@ impl Window {
             distinct_file_paths: self.file_paths.len() as u64,
             file_path_entropy: shannon_entropy(&self.path_chars),
             distinct_comms: self.comms.len() as u64,
+            dns_count: self.dns_count,
+            distinct_dns_queries: self.dns_queries.len() as u64,
         }
     }
 }
@@ -109,6 +117,15 @@ impl FeatureExtractor {
                     w.dst_ips.insert(addr.clone());
                 }
                 w.dst_ports.insert(*port);
+            }
+            Event::Accept { .. } | Event::Bind { .. } => {
+                w.net_connect_count += 1;
+            }
+            Event::Dns { query, .. } => {
+                w.dns_count += 1;
+                if !query.is_empty() {
+                    w.dns_queries.insert(query.clone());
+                }
             }
             Event::Ptrace { .. }
             | Event::Mount { .. }

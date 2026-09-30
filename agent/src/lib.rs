@@ -8,6 +8,8 @@ pub mod event;
 pub mod features;
 pub mod ingest;
 pub mod loader;
+pub mod metrics;
 pub mod ml;
 pub mod rules;
 pub mod sink;
+pub mod tamper;

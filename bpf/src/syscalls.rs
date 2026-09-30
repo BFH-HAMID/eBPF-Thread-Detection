@@ -1,13 +1,16 @@
-//! Syscall tracepoints: execve, openat, connect, ptrace, mount, setns.
+//! Syscall tracepoints: execve, openat, connect, accept4, bind, ptrace, mount,
+//! setns.
 //!
 //! All probes attach to `syscalls/sys_enter_*` tracepoints, which are available
 //! on any kernel with `CONFIG_FTRACE_SYSCALLS=y` — no BTF/CO-RE required for
 //! this phase. Argument layout: [`crate::util::sys_enter_arg`].
 
 use aya_ebpf::{macros::tracepoint, programs::TracePointContext};
-use sentinel_common::{AF_INET, AF_INET6, EVENT_PTRACE, EVENT_SETNS};
+use sentinel_common::{EVENT_ACCEPT, EVENT_BIND, EVENT_CONNECT, EVENT_PTRACE, EVENT_SETNS};
 
-use crate::util::{emit_execve, emit_file, emit_mount, emit_net, emit_sys, sys_arg};
+use crate::util::{
+    emit_execve, emit_file, emit_mount, emit_net, emit_sys, parse_sockaddr, sys_arg,
+};
 
 /// `execve(filename, argv, envp)`.
 #[tracepoint(category = "syscalls", name = "sys_enter_execve")]
@@ -39,57 +42,33 @@ pub fn sys_enter_connect(ctx: TracePointContext) -> u32 {
     let fd = sys_arg(&ctx, 0) as i32;
     let sa_ptr = sys_arg(&ctx, 1);
     let addrlen = sys_arg(&ctx, 2) as u32;
+    let (family, port, addr, addrlen) = parse_sockaddr(sa_ptr, addrlen);
+    emit_net(&ctx, EVENT_CONNECT, fd, family, port, addr, addrlen);
+    0
+}
 
-    let mut family: u16 = 0;
-    let mut port: u16 = 0;
-    let mut addr = [0u8; 16];
+/// `accept4(fd, upeer_sockaddr, upeer_addrlen, flags)`.
+///
+/// Emitted at syscall *entry*: the peer address is still empty here (the kernel
+/// fills it in on the way out; capturing it needs `sys_exit_accept4` with its
+/// own layout, or CO-RE). The accept signal itself — a listening socket taking
+/// a connection — is what the rules use.
+#[tracepoint(category = "syscalls", name = "sys_enter_accept4")]
+pub fn sys_enter_accept4(ctx: TracePointContext) -> u32 {
+    let fd = sys_arg(&ctx, 0) as i32;
+    emit_net(&ctx, EVENT_ACCEPT, fd, 0, 0, [0u8; 16], 0);
+    0
+}
 
-    if sa_ptr != 0 {
-        // SAFETY: `uservaddr` is a user pointer valid for `addrlen` bytes; the
-        // helper bails out safely on fault.
-        let read_family =
-            unsafe { aya_ebpf::helpers::bpf_probe_read_user(sa_ptr as *const u16) };
-        family = read_family.unwrap_or(0);
-        match family {
-            AF_INET => {
-                // struct sockaddr_in { family: u16, port: be16, addr: [u8; 4], ..8 }
-                #[repr(C)]
-                struct SockAddrIn {
-                    _family: u16,
-                    port: u16,
-                    addr: [u8; 4],
-                    _zero: [u8; 8],
-                }
-                if let Ok(sin) =
-                    (unsafe { aya_ebpf::helpers::bpf_probe_read_user(sa_ptr as *const SockAddrIn) })
-                {
-                    port = u16::from_be(sin.port);
-                    addr[..4].copy_from_slice(&sin.addr);
-                }
-            }
-            AF_INET6 => {
-                // struct sockaddr_in6 { family: u16, port: be16, flowinfo: u32,
-                //                       addr: [u8; 16], scope_id: u32 }
-                #[repr(C)]
-                struct SockAddrIn6 {
-                    _family: u16,
-                    port: u16,
-                    _flowinfo: u32,
-                    addr: [u8; 16],
-                    _scope_id: u32,
-                }
-                if let Ok(sin6) = (unsafe {
-                    aya_ebpf::helpers::bpf_probe_read_user(sa_ptr as *const SockAddrIn6)
-                }) {
-                    port = u16::from_be(sin6.port);
-                    addr.copy_from_slice(&sin6.addr);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    emit_net(&ctx, fd, family, port, addr, addrlen);
+/// `bind(fd, umyaddr, addrlen)` — listening-socket setup (reverse-shell
+/// listeners, privileged-port binds).
+#[tracepoint(category = "syscalls", name = "sys_enter_bind")]
+pub fn sys_enter_bind(ctx: TracePointContext) -> u32 {
+    let fd = sys_arg(&ctx, 0) as i32;
+    let sa_ptr = sys_arg(&ctx, 1);
+    let addrlen = sys_arg(&ctx, 2) as u32;
+    let (family, port, addr, addrlen) = parse_sockaddr(sa_ptr, addrlen);
+    emit_net(&ctx, EVENT_BIND, fd, family, port, addr, addrlen);
     0
 }
 

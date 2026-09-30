@@ -15,6 +15,12 @@ clap = { workspace = true, features = ["derive"] }
 env_logger = { workspace = true }
 libc = { workspace = true }
 log = { workspace = true }
+ort = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true, features = [
+    "blocking",
+    "json",
+    "rustls-tls",
+] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
@@ -44,6 +50,13 @@ cargo_metadata = { workspace = true }
 # workflows with stable cargo; stable cargo outright refuses to load manifests that use unstable
 # features.
 sentinel-ebpf = { path = "../bpf" }
+
+[features]
+default = ["onnx", "k8s"]
+# In-agent ONNX inference (IsolationForest/AE window models + LSTM n-gram).
+onnx = ["dep:ort"]
+# Kubernetes API enrichment (pod name/namespace from pod UID).
+k8s = ["dep:reqwest"]
 
 [lib]
 name = "sentinel"

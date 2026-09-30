@@ -14,8 +14,8 @@ use aya_ebpf::{
     programs::TracePointContext,
 };
 use sentinel_common::{
-    EVENT_CONNECT, EVENT_EXECVE, EVENT_MOUNT, EVENT_OPENAT, ExecveEvent, FileEvent, MountEvent,
-    NetEvent, SyscallEvent, TASK_COMM_LEN,
+    DnsEvent, EVENT_EXECVE, EVENT_MOUNT, EVENT_OPENAT, ExecveEvent, FileEvent, FilterConfig,
+    MountEvent, NetEvent, SyscallEvent, TASK_COMM_LEN,
 };
 
 /// Size of the events ring buffer, in bytes. Must be a power-of-two multiple of
@@ -33,6 +33,22 @@ pub static EVENTS: RingBuf = RingBuf::with_byte_size(EVENTS_RINGBUF_BYTES, 0);
 /// enough for a loss metric, and cheap in verifier terms).
 #[map]
 pub static DROPPED: Array<u64> = Array::with_max_entries(1, 0);
+
+/// In-kernel capture filter (uid range), written by userspace at startup.
+/// Checked before any ring-buffer reservation so filtered events are nearly
+/// free — the eBPF analogue of Falco's `base_syscalls` / Tetragon selectors.
+#[map]
+pub static CONFIG: Array<FilterConfig> = Array::with_max_entries(1, 0);
+
+/// Whether events from `uid` should be captured. A missing config entry means
+/// "capture everything".
+#[inline(always)]
+pub fn should_capture(uid: u32) -> bool {
+    match CONFIG.get(0) {
+        Some(cfg) => uid >= cfg.min_uid && uid <= cfg.max_uid,
+        None => true,
+    }
+}
 
 /// Tracepoint `syscalls/sys_enter_*` layout on 64-bit kernels:
 ///
@@ -59,8 +75,9 @@ pub fn sys_arg(ctx: &TracePointContext, n: usize) -> u64 {
     unsafe { ctx.read_at::<u64>(sys_enter_arg(n)) }.unwrap_or(0)
 }
 
+/// Read the common `EventHeader` fields for the current task.
 #[inline(always)]
-fn header(ctx: &TracePointContext, event_type: u32) -> sentinel_common::EventHeader {
+pub fn header(ctx: &impl aya_ebpf::EbpfContext, event_type: u32) -> sentinel_common::EventHeader {
     sentinel_common::EventHeader {
         event_type,
         pid: ctx.pid(),
@@ -149,7 +166,10 @@ unsafe fn zero<T>(p: *mut T) {
 /// Emit an [`ExecveEvent`]. `argv_ptr` is the `char **argv` user pointer; the
 /// first [`sentinel_common::ARG_SLOTS`] entries are captured.
 #[inline(always)]
-pub fn emit_execve(ctx: &TracePointContext, filename_ptr: u64, argv_ptr: u64) {
+pub fn emit_execve(ctx: &impl aya_ebpf::EbpfContext, filename_ptr: u64, argv_ptr: u64) {
+    if !should_capture(ctx.uid()) {
+        return;
+    }
     let Some(mut entry) = EVENTS.reserve::<ExecveEvent>(0) else {
         bump_dropped();
         return;
@@ -168,12 +188,15 @@ pub fn emit_execve(ctx: &TracePointContext, filename_ptr: u64, argv_ptr: u64) {
 /// Emit a [`FileEvent`] (openat-style file access).
 #[inline(always)]
 pub fn emit_file(
-    ctx: &TracePointContext,
+    ctx: &impl aya_ebpf::EbpfContext,
     filename_ptr: u64,
     dirfd: i32,
     flags: u32,
     mode: u32,
 ) {
+    if !should_capture(ctx.uid()) {
+        return;
+    }
     let Some(mut entry) = EVENTS.reserve::<FileEvent>(0) else {
         bump_dropped();
         return;
@@ -191,16 +214,20 @@ pub fn emit_file(
     entry.submit(0);
 }
 
-/// Emit a [`NetEvent`] (connect).
+/// Emit a [`NetEvent`] (`event_type` selects connect/accept/bind semantics).
 #[inline(always)]
 pub fn emit_net(
-    ctx: &TracePointContext,
+    ctx: &impl aya_ebpf::EbpfContext,
+    event_type: u32,
     fd: i32,
     family: u16,
     port: u16,
     addr: [u8; 16],
     addrlen: u32,
 ) {
+    if !should_capture(ctx.uid()) {
+        return;
+    }
     let Some(mut entry) = EVENTS.reserve::<NetEvent>(0) else {
         bump_dropped();
         return;
@@ -209,7 +236,7 @@ pub fn emit_net(
     // SAFETY: exclusive ring-buffer slot until submit.
     unsafe {
         zero(e);
-        (*e).header = header(ctx, EVENT_CONNECT);
+        (*e).header = header(ctx, event_type);
         (*e).fd = fd;
         (*e).family = family;
         (*e).port = port;
@@ -219,15 +246,104 @@ pub fn emit_net(
     entry.submit(0);
 }
 
+/// Parse a user `struct sockaddr` (v4 or v6) into `(family, port, addr, addrlen)`.
+/// Used by `connect` and `bind`. Any other family reports the family only.
+#[inline(always)]
+pub fn parse_sockaddr(sa_ptr: u64, addrlen: u32) -> (u16, u16, [u8; 16], u32) {
+    let mut family: u16 = 0;
+    let mut port: u16 = 0;
+    let mut addr = [0u8; 16];
+    if sa_ptr == 0 {
+        return (family, port, addr, addrlen);
+    }
+    // SAFETY: `sa_ptr` is a user pointer valid for `addrlen` bytes; the helper
+    // bails out safely on fault.
+    family = unsafe { aya_ebpf::helpers::bpf_probe_read_user(sa_ptr as *const u16) }.unwrap_or(0);
+    match family {
+        sentinel_common::AF_INET => {
+            // struct sockaddr_in { family: u16, port: be16, addr: [u8; 4], ..8 }
+            #[repr(C)]
+            struct SockAddrIn {
+                _family: u16,
+                port: u16,
+                addr: [u8; 4],
+                _zero: [u8; 8],
+            }
+            if let Ok(sin) =
+                (unsafe { aya_ebpf::helpers::bpf_probe_read_user(sa_ptr as *const SockAddrIn) })
+            {
+                port = u16::from_be(sin.port);
+                addr[..4].copy_from_slice(&sin.addr);
+            }
+        }
+        sentinel_common::AF_INET6 => {
+            // struct sockaddr_in6 { family: u16, port: be16, flowinfo: u32,
+            //                       addr: [u8; 16], scope_id: u32 }
+            #[repr(C)]
+            struct SockAddrIn6 {
+                _family: u16,
+                port: u16,
+                _flowinfo: u32,
+                addr: [u8; 16],
+                _scope_id: u32,
+            }
+            if let Ok(sin6) =
+                (unsafe { aya_ebpf::helpers::bpf_probe_read_user(sa_ptr as *const SockAddrIn6) })
+            {
+                port = u16::from_be(sin6.port);
+                addr.copy_from_slice(&sin6.addr);
+            }
+        }
+        _ => {}
+    }
+    (family, port, addr, addrlen)
+}
+
+/// Emit a [`DnsEvent`] (from the cgroup_skb egress program). `qname_raw` is
+/// the raw wire-format QNAME + QTYPE/QCLASS tail; `qname_len` how many bytes
+/// were captured.
+#[inline(always)]
+pub fn emit_dns(
+    ctx: &impl aya_ebpf::EbpfContext,
+    qname_raw: &[u8; 128],
+    qname_len: u16,
+    dst_port: u16,
+    family: u16,
+    server: [u8; 16],
+) {
+    if !should_capture(ctx.uid()) {
+        return;
+    }
+    let Some(mut entry) = EVENTS.reserve::<DnsEvent>(0) else {
+        bump_dropped();
+        return;
+    };
+    let e = entry.as_mut_ptr();
+    // SAFETY: exclusive ring-buffer slot until submit.
+    unsafe {
+        zero(e);
+        (*e).header = header(ctx, sentinel_common::EVENT_DNS);
+        (*e).qname_raw = *qname_raw;
+        (*e).qname_len = qname_len;
+        (*e).dst_port = dst_port;
+        (*e).family = family;
+        (*e).server = server;
+    }
+    entry.submit(0);
+}
+
 /// Emit a [`MountEvent`].
 #[inline(always)]
 pub fn emit_mount(
-    ctx: &TracePointContext,
+    ctx: &impl aya_ebpf::EbpfContext,
     source_ptr: u64,
     target_ptr: u64,
     fstype_ptr: u64,
     flags: u64,
 ) {
+    if !should_capture(ctx.uid()) {
+        return;
+    }
     let Some(mut entry) = EVENTS.reserve::<MountEvent>(0) else {
         bump_dropped();
         return;
@@ -248,7 +364,7 @@ pub fn emit_mount(
 /// Emit a [`SyscallEvent`] for ptrace/setns/unshare/capset/pivot_root.
 #[inline(always)]
 pub fn emit_sys(
-    ctx: &TracePointContext,
+    ctx: &impl aya_ebpf::EbpfContext,
     event_type: u32,
     arg0: u64,
     arg1: u64,
@@ -256,6 +372,9 @@ pub fn emit_sys(
     path_ptr: u64,
     path2_ptr: u64,
 ) {
+    if !should_capture(ctx.uid()) {
+        return;
+    }
     let Some(mut entry) = EVENTS.reserve::<SyscallEvent>(0) else {
         bump_dropped();
         return;

@@ -1,19 +1,26 @@
-//! Output sinks: stdout/JSON today; Prometheus, webhook and OTLP are Phase 5
-//! (`docs/roadmap.md`). Alerts and (optionally) raw events go through [`Sink`].
+//! Output sinks: stdout/JSON today; webhook and OTLP are roadmap items
+//! (`docs/roadmap.md`). Alerts, risk scores, tamper findings and (optionally)
+//! raw events go through [`Sink`]. Prometheus scrapes [`Metrics`] directly
+//! (`crate::metrics`).
 
 use std::{io::Write, sync::atomic::{AtomicU64, Ordering}};
 
 use serde::Serialize;
 
-use crate::{event::Event, rules::Rule};
+use crate::{event::Event, ml::RiskScore, rules::Rule, tamper::TamperFinding};
 
-/// Counters shared across the ingest pipeline and the periodic metrics log.
+/// Counters shared across the ingest pipeline, the metrics endpoint and the
+/// periodic summary.
 #[derive(Debug, Default)]
 pub struct Metrics {
     pub events: AtomicU64,
     pub alerts: AtomicU64,
+    pub risk_alerts: AtomicU64,
+    pub tamper_alerts: AtomicU64,
     pub decode_errors: AtomicU64,
     pub dropped_reported: AtomicU64,
+    pub bytes_ingress: AtomicU64,
+    pub bytes_egress: AtomicU64,
 }
 
 impl Metrics {
@@ -21,8 +28,12 @@ impl Metrics {
         MetricsSnapshot {
             events: self.events.load(Ordering::Relaxed),
             alerts: self.alerts.load(Ordering::Relaxed),
+            risk_alerts: self.risk_alerts.load(Ordering::Relaxed),
+            tamper_alerts: self.tamper_alerts.load(Ordering::Relaxed),
             decode_errors: self.decode_errors.load(Ordering::Relaxed),
             dropped_reported: self.dropped_reported.load(Ordering::Relaxed),
+            bytes_ingress: self.bytes_ingress.load(Ordering::Relaxed),
+            bytes_egress: self.bytes_egress.load(Ordering::Relaxed),
         }
     }
 }
@@ -31,8 +42,12 @@ impl Metrics {
 pub struct MetricsSnapshot {
     pub events: u64,
     pub alerts: u64,
+    pub risk_alerts: u64,
+    pub tamper_alerts: u64,
     pub decode_errors: u64,
     pub dropped_reported: u64,
+    pub bytes_ingress: u64,
+    pub bytes_egress: u64,
 }
 
 /// A rule match, ready for output.
@@ -70,6 +85,8 @@ impl Alert {
 pub trait Sink: Send {
     fn emit_alert(&mut self, alert: &Alert);
     fn emit_event(&mut self, event: &Event);
+    fn emit_risk(&mut self, risk: &RiskScore);
+    fn emit_tamper(&mut self, finding: &TamperFinding);
 }
 
 /// JSON-lines to stdout (`{"schema_version":1,...}` per line).
@@ -89,6 +106,14 @@ impl Sink for StdoutJsonSink {
         if self.emit_events {
             write_json_line("event", event);
         }
+    }
+
+    fn emit_risk(&mut self, risk: &RiskScore) {
+        write_json_line("risk", risk);
+    }
+
+    fn emit_tamper(&mut self, finding: &TamperFinding) {
+        write_json_line("tamper", finding);
     }
 }
 

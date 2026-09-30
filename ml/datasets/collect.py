@@ -24,7 +24,8 @@ from pathlib import Path
 
 import numpy as np
 
-# Must match `agent/src/features.rs::FeatureVector` field order.
+# Must match `agent/src/features.rs::FeatureVector` field order (and
+# `FEATURE_COLUMNS` in `agent/src/ml.rs`).
 FEATURE_COLUMNS = [
     "exec_count",
     "open_count",
@@ -35,6 +36,8 @@ FEATURE_COLUMNS = [
     "distinct_file_paths",
     "file_path_entropy",
     "distinct_comms",
+    "dns_count",
+    "distinct_dns_queries",
 ]
 
 
@@ -58,6 +61,8 @@ class Window:
         "file_paths",
         "path_chars",
         "comms",
+        "dns_count",
+        "dns_queries",
     )
 
     def __init__(self) -> None:
@@ -70,6 +75,8 @@ class Window:
         self.file_paths: set[str] = set()
         self.path_chars: dict[int, int] = defaultdict(int)
         self.comms: set[str] = set()
+        self.dns_count = 0
+        self.dns_queries: set[str] = set()
 
     def observe(self, data: dict) -> None:
         evt_type = data.get("evt_type", "")
@@ -89,6 +96,13 @@ class Window:
             if addr:
                 self.dst_ips.add(addr)
             self.dst_ports.add(int(data.get("port", 0)))
+        elif evt_type in ("accept", "bind"):
+            self.net_connect_count += 1
+        elif evt_type == "dns":
+            self.dns_count += 1
+            query = data.get("query", "")
+            if query:
+                self.dns_queries.add(query)
         else:
             self.sys_event_count += 1
 
@@ -110,6 +124,8 @@ class Window:
             float(len(self.file_paths)),
             float(shannon_entropy(self.path_chars)),
             float(len(self.comms)),
+            float(self.dns_count),
+            float(len(self.dns_queries)),
         ]
 
 
@@ -140,25 +156,61 @@ def process(lines, window_secs: int) -> tuple[np.ndarray, list[str]]:
     return np.asarray(rows, dtype=np.float32), keys
 
 
+def process_sequences(lines) -> dict[str, list[str]]:
+    """Per-key event-type token sequences for the n-gram (LSTM) model.
+
+    Tokens are plain ``evt_type`` names in arrival order — the same vocabulary
+    the agent's ``SequenceScorer`` sees. Sequences are truncated to 4096
+    tokens per key (keeps datasets bounded).
+    """
+    seqs: dict[str, list[str]] = defaultdict(list)
+    for raw in lines:
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if obj.get("kind") != "event":
+            continue
+        data = obj.get("data", {})
+        header = data.get("header", {})
+        key = f"tgid:{header.get('tgid', 0)}"
+        tok = data.get("evt_type", "")
+        if tok and len(seqs[key]) < 4096:
+            seqs[key].append(tok)
+    return seqs
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("input", help="JSONL file from the agent, or '-' for stdin")
     ap.add_argument("-o", "--output", type=Path, required=True)
     ap.add_argument("--window-secs", type=int, default=60)
+    ap.add_argument(
+        "--sequences-out",
+        type=Path,
+        default=None,
+        help="also write per-key evt_type token sequences (JSONL) for the LSTM",
+    )
     args = ap.parse_args()
 
     stream = sys.stdin if args.input == "-" else open(args.input, encoding="utf-8")
     with stream:
-        matrix, keys = process(stream, args.window_secs)
+        if args.sequences_out:
+            raw = list(stream)
+            seqs = process_sequences(iter(raw))
+            matrix, keys = process(iter(raw), args.window_secs)
+        else:
+            seqs = {}
+            matrix, keys = process(stream, args.window_secs)
 
-    if matrix.size == 0:
+    if matrix.size == 0 and not seqs:
         print("no events collected; dataset is empty", file=sys.stderr)
         return 1
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     np.savez(
         args.output,
-        features=matrix,
+        features=matrix if matrix.size else np.zeros((0, len(FEATURE_COLUMNS)), np.float32),
         columns=np.asarray(FEATURE_COLUMNS),
         keys=np.asarray(keys),
     )
@@ -174,6 +226,13 @@ def main() -> int:
         )
     )
     print(f"wrote {matrix.shape[0]} rows x {matrix.shape[1]} cols -> {args.output}")
+
+    if args.sequences_out:
+        args.sequences_out.parent.mkdir(parents=True, exist_ok=True)
+        with open(args.sequences_out, "w", encoding="utf-8") as out:
+            for key, tokens in seqs.items():
+                out.write(json.dumps({"key": key, "tokens": tokens}) + "\n")
+        print(f"wrote {len(seqs)} token sequences -> {args.sequences_out}")
     return 0
 
 

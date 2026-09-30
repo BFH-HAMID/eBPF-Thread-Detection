@@ -47,6 +47,9 @@ pub const EVENT_SETNS: u32 = 6;
 pub const EVENT_UNSHARE: u32 = 7;
 pub const EVENT_CAPSET: u32 = 8;
 pub const EVENT_PIVOT_ROOT: u32 = 9;
+pub const EVENT_ACCEPT: u32 = 10;
+pub const EVENT_BIND: u32 = 11;
+pub const EVENT_DNS: u32 = 12;
 
 /// Stable name for an event type tag. Used by the rule engine (`evt.type=`).
 pub const fn event_type_name(event_type: u32) -> &'static str {
@@ -60,6 +63,9 @@ pub const fn event_type_name(event_type: u32) -> &'static str {
         EVENT_UNSHARE => "unshare",
         EVENT_CAPSET => "capset",
         EVENT_PIVOT_ROOT => "pivot_root",
+        EVENT_ACCEPT => "accept",
+        EVENT_BIND => "bind",
+        EVENT_DNS => "dns",
         _ => "unknown",
     }
 }
@@ -180,6 +186,58 @@ pub struct SyscallEvent {
     pub path2: [u8; MAX_ARGV_LEN],
 }
 
+/// DNS query observed on the wire by the `cgroup_skb` egress program
+/// (UDP destination port 53). Emitted from `bpf/src/network.rs`.
+///
+/// The query name is captured in **wire format** (length-prefixed labels,
+/// followed by the QTYPE/QCLASS tail) — label walking happens in userspace
+/// (`agent/src/event.rs`), keeping the probe to fixed-range copies that the
+/// verifier checks trivially. Long names are truncated.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct DnsEvent {
+    pub header: EventHeader,
+    /// Raw QNAME + QTYPE/QCLASS tail, truncated to 128 bytes.
+    pub qname_raw: [u8; 128],
+    /// Bytes of `qname_raw` that were actually captured.
+    pub qname_len: u16,
+    /// Destination port (53 for classic DNS).
+    pub dst_port: u16,
+    /// Address family of the DNS server (`AF_INET` / `AF_INET6`).
+    pub family: u16,
+    pub _pad: u16,
+    /// DNS server address (IPv4 in first 4 bytes, IPv6 in all 16).
+    pub server: [u8; 16],
+}
+
+/// In-kernel capture filter. Written by userspace into the `CONFIG` map at
+/// startup; checked by every emitter before reserving ring-buffer space.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct FilterConfig {
+    /// Only capture events from uids in `[min_uid, max_uid]`.
+    pub min_uid: u32,
+    pub max_uid: u32,
+}
+
+impl FilterConfig {
+    pub const CAPTURE_ALL: FilterConfig = FilterConfig {
+        min_uid: 0,
+        max_uid: u32::MAX,
+    };
+}
+
+/// Per-cgroup byte counters aggregated by the `cgroup_skb` programs in a
+/// `BPF_MAP_TYPE_HASH` keyed by cgroup id. Userspace reads and resets them.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default)]
+pub struct ByteStats {
+    /// Bytes received (ingress hook).
+    pub ingress: u64,
+    /// Bytes sent (egress hook).
+    pub egress: u64,
+}
+
 // ---------------------------------------------------------------------------
 // FFI safety for the userspace decoder (`aya::Pod` marks plain-old-data)
 // ---------------------------------------------------------------------------
@@ -196,6 +254,12 @@ unsafe impl aya::Pod for NetEvent {}
 unsafe impl aya::Pod for MountEvent {}
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for SyscallEvent {}
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for DnsEvent {}
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for FilterConfig {}
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for ByteStats {}
 
 #[cfg(test)]
 mod tests {
@@ -211,6 +275,9 @@ mod tests {
         assert_eq!(core::mem::size_of::<NetEvent>(), 80);
         assert_eq!(core::mem::size_of::<MountEvent>(), 472);
         assert_eq!(core::mem::size_of::<SyscallEvent>(), 456);
+        assert_eq!(core::mem::size_of::<DnsEvent>(), 200);
+        assert_eq!(core::mem::size_of::<FilterConfig>(), 8);
+        assert_eq!(core::mem::size_of::<ByteStats>(), 16);
     }
 
     #[test]
@@ -221,5 +288,6 @@ mod tests {
         assert!(core::mem::align_of::<NetEvent>() <= 8);
         assert!(core::mem::align_of::<MountEvent>() <= 8);
         assert!(core::mem::align_of::<SyscallEvent>() <= 8);
+        assert!(core::mem::align_of::<DnsEvent>() <= 8);
     }
 }

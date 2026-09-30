@@ -5,9 +5,10 @@ use std::{collections::BTreeMap, mem::size_of};
 
 use serde::Serialize;
 use sentinel_common::{
-    self, AF_INET, AF_INET6, EVENT_CAPSET, EVENT_CONNECT, EVENT_EXECVE, EVENT_MOUNT, EVENT_OPENAT,
-    EVENT_PIVOT_ROOT, EVENT_PTRACE, EVENT_SETNS, EVENT_UNSHARE, ExecveEvent, FileEvent, MountEvent,
-    NetEvent, SyscallEvent, event_type_name,
+    self, AF_INET, AF_INET6, DnsEvent, EVENT_ACCEPT, EVENT_BIND, EVENT_CAPSET, EVENT_CONNECT,
+    EVENT_DNS, EVENT_EXECVE, EVENT_MOUNT, EVENT_OPENAT, EVENT_PIVOT_ROOT, EVENT_PTRACE,
+    EVENT_SETNS, EVENT_UNSHARE, ExecveEvent, FileEvent, MountEvent, NetEvent, SyscallEvent,
+    event_type_name,
 };
 
 use crate::rules::{FieldLookup, Val};
@@ -51,6 +52,37 @@ pub enum Event {
         port: u16,
         addr: String,
     },
+    /// `accept4` — a listening socket took a connection (peer address is
+    /// filled at syscall exit and not captured yet; see `bpf/src/syscalls.rs`).
+    Accept {
+        header: Header,
+        fd: i32,
+        family: u16,
+        family_name: String,
+        port: u16,
+        addr: String,
+    },
+    /// `bind` — socket bound to a local address/port.
+    Bind {
+        header: Header,
+        fd: i32,
+        family: u16,
+        family_name: String,
+        port: u16,
+        addr: String,
+    },
+    /// DNS query captured on the wire by the `cgroup_skb` egress program.
+    Dns {
+        header: Header,
+        /// Decoded dotted query name (truncated by capture).
+        query: String,
+        /// Query type number (1=A, 28=AAAA, 16=TXT, ...), 0 if not captured.
+        qtype: u16,
+        /// DNS server address.
+        server: String,
+        dst_port: u16,
+        family_name: String,
+    },
     Ptrace {
         header: Header,
         request: u64,
@@ -89,6 +121,9 @@ impl Event {
             Event::Execve { header, .. }
             | Event::Openat { header, .. }
             | Event::Connect { header, .. }
+            | Event::Accept { header, .. }
+            | Event::Bind { header, .. }
+            | Event::Dns { header, .. }
             | Event::Ptrace { header, .. }
             | Event::Mount { header, .. }
             | Event::Setns { header, .. }
@@ -99,12 +134,18 @@ impl Event {
     }
 }
 
-/// A context that enriches an event with runtime metadata (container id, ...)
-/// before rule evaluation.
+/// A context that enriches an event with runtime metadata (container id, pod
+/// info, ...) before rule evaluation.
 #[derive(Debug, Clone)]
 pub struct EventContext {
     pub event: Event,
-    pub container_id: Option<String>,
+    pub enrichment: crate::enrich::Enrichment,
+}
+
+impl EventContext {
+    pub fn container_id(&self) -> Option<String> {
+        self.enrichment.container_id.clone()
+    }
 }
 
 impl FieldLookup for EventContext {
@@ -120,8 +161,11 @@ impl FieldLookup for EventContext {
             "proc.uid" => Val::Int(h.uid as i64),
             "proc.gid" => Val::Int(h.gid as i64),
             "proc.name" | "proc.comm" => Val::Str(h.comm.clone()),
-            "container.id" => Val::Str(self.container_id.clone()?),
-            "container" => Val::Bool(self.container_id.is_some()),
+            "container.id" => Val::Str(self.enrichment.container_id.clone()?),
+            "container" => Val::Bool(self.enrichment.container_id.is_some()),
+            "pod.uid" => Val::Str(self.enrichment.pod_uid.clone()?),
+            "pod.name" => Val::Str(self.enrichment.pod_name.clone()?),
+            "pod.namespace" => Val::Str(self.enrichment.pod_namespace.clone()?),
             "exec.path" => match e {
                 Event::Execve { filename, .. } => Val::Str(filename.clone()),
                 _ => return None,
@@ -147,19 +191,42 @@ impl FieldLookup for EventContext {
                 _ => return None,
             },
             "net.addr" => match e {
-                Event::Connect { addr, .. } => Val::Str(addr.clone()),
+                Event::Connect { addr, .. }
+                | Event::Accept { addr, .. }
+                | Event::Bind { addr, .. } => Val::Str(addr.clone()),
+                Event::Dns { server, .. } => Val::Str(server.clone()),
                 _ => return None,
             },
             "net.port" => match e {
-                Event::Connect { port, .. } => Val::Int(*port as i64),
+                Event::Connect { port, .. }
+                | Event::Accept { port, .. }
+                | Event::Bind { port, .. } => Val::Int(*port as i64),
+                Event::Dns { dst_port, .. } => Val::Int(*dst_port as i64),
                 _ => return None,
             },
             "net.family" => match e {
-                Event::Connect { family_name, .. } => Val::Str(family_name.clone()),
+                Event::Connect { family_name, .. }
+                | Event::Accept { family_name, .. }
+                | Event::Bind { family_name, .. }
+                | Event::Dns { family_name, .. } => Val::Str(family_name.clone()),
                 _ => return None,
             },
             "net.fd" => match e {
-                Event::Connect { fd, .. } => Val::Int(*fd as i64),
+                Event::Connect { fd, .. } | Event::Accept { fd, .. } | Event::Bind { fd, .. } => {
+                    Val::Int(*fd as i64)
+                }
+                _ => return None,
+            },
+            "dns.query" => match e {
+                Event::Dns { query, .. } => Val::Str(query.clone()),
+                _ => return None,
+            },
+            "dns.qtype" => match e {
+                Event::Dns { qtype, .. } => Val::Int(*qtype as i64),
+                _ => return None,
+            },
+            "dns.server" => match e {
+                Event::Dns { server, .. } => Val::Str(server.clone()),
                 _ => return None,
             },
             "mount.source" => match e {
@@ -226,6 +293,12 @@ impl FieldLookup for EventContext {
             "net.addr",
             "net.port",
             "net.family",
+            "dns.query",
+            "dns.qtype",
+            "dns.server",
+            "pod.uid",
+            "pod.name",
+            "pod.namespace",
             "mount.source",
             "mount.target",
             "mount.fstype",
@@ -278,6 +351,41 @@ pub fn decode(bytes: &[u8]) -> Option<Event> {
                 family_name: family_name(e.family).to_string(),
                 port: e.port,
                 addr: format_addr(e.family, &e.addr),
+            })
+        }
+        EVENT_ACCEPT => {
+            let e = decode_pod::<NetEvent>(bytes)?;
+            Some(Event::Accept {
+                header: decode_header(&e.header),
+                fd: e.fd,
+                family: e.family,
+                family_name: family_name(e.family).to_string(),
+                port: e.port,
+                addr: format_addr(e.family, &e.addr),
+            })
+        }
+        EVENT_BIND => {
+            let e = decode_pod::<NetEvent>(bytes)?;
+            Some(Event::Bind {
+                header: decode_header(&e.header),
+                fd: e.fd,
+                family: e.family,
+                family_name: family_name(e.family).to_string(),
+                port: e.port,
+                addr: format_addr(e.family, &e.addr),
+            })
+        }
+        EVENT_DNS => {
+            let e = decode_pod::<DnsEvent>(bytes)?;
+            let len = e.qname_len as usize;
+            let (query, qtype) = parse_dns_wire(&e.qname_raw[..len.min(e.qname_raw.len())]);
+            Some(Event::Dns {
+                header: decode_header(&e.header),
+                query,
+                qtype,
+                server: format_addr(e.family, &e.server),
+                dst_port: e.dst_port,
+                family_name: family_name(e.family).to_string(),
             })
         }
         EVENT_PTRACE => {
@@ -359,6 +467,33 @@ fn decode_header(h: &sentinel_common::EventHeader) -> Header {
 pub fn cstr(bytes: &[u8]) -> String {
     let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
     String::from_utf8_lossy(&bytes[..end]).into_owned()
+}
+
+/// Parse a raw DNS QNAME capture: length-prefixed labels followed by the
+/// QTYPE/QCLASS tail. Returns `(dotted_name, qtype)`; `qtype` is 0 when the
+/// capture was truncated before it. Pointer compression (0xC0..) is not
+/// expected in *queries* and is treated as end-of-name.
+pub fn parse_dns_wire(raw: &[u8]) -> (String, u16) {
+    let mut labels: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    while i < raw.len() {
+        let len = raw[i] as usize;
+        if len == 0 {
+            i += 1;
+            break;
+        }
+        if len >= 0xC0 || i + 1 + len > raw.len() {
+            return (labels.join("."), 0);
+        }
+        labels.push(String::from_utf8_lossy(&raw[i + 1..i + 1 + len]).into_owned());
+        i += 1 + len;
+    }
+    let qtype = if i + 2 <= raw.len() {
+        u16::from_be_bytes([raw[i], raw[i + 1]])
+    } else {
+        0
+    };
+    (labels.join("."), qtype)
 }
 
 /// Join argv slots (one NUL-padded string per `slot_len` bytes) with spaces.
@@ -484,6 +619,23 @@ mod tests {
     }
 
     #[test]
+    fn parses_dns_wire_format() {
+        // 3www6google3com0 + type A(00 01) + class IN(00 01)
+        let raw: &[u8] = &[
+            3, b'w', b'w', b'w', 6, b'g', b'o', b'o', b'g', b'l', b'e', 3, b'c', b'o', b'm', 0,
+            0, 1, 0, 1,
+        ];
+        let (name, qtype) = parse_dns_wire(raw);
+        assert_eq!(name, "www.google.com");
+        assert_eq!(qtype, 1);
+
+        // truncated before qtype
+        let (name, qtype) = parse_dns_wire(&raw[..16]);
+        assert_eq!(name, "www.google.com");
+        assert_eq!(qtype, 0);
+    }
+
+    #[test]
     fn field_lookup_works() {
         let ctx = EventContext {
             event: Event::Execve {
@@ -491,7 +643,10 @@ mod tests {
                 filename: "/usr/bin/curl".into(),
                 argv: "curl http://evil".into(),
             },
-            container_id: Some("abc123".into()),
+            enrichment: crate::enrich::Enrichment {
+                container_id: Some("abc123".into()),
+                ..Default::default()
+            },
         };
         assert_eq!(ctx.lookup("evt.type"), Some(Val::Str("execve".into())));
         assert_eq!(ctx.lookup("proc.name"), Some(Val::Str("bash".into())));
