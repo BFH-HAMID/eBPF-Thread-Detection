@@ -250,15 +250,15 @@ pub fn emit_net(
 /// Used by `connect` and `bind`. Any other family reports the family only.
 #[inline(always)]
 pub fn parse_sockaddr(sa_ptr: u64, addrlen: u32) -> (u16, u16, [u8; 16], u32) {
-    let mut family: u16 = 0;
     let mut port: u16 = 0;
     let mut addr = [0u8; 16];
     if sa_ptr == 0 {
-        return (family, port, addr, addrlen);
+        return (0, port, addr, addrlen);
     }
     // SAFETY: `sa_ptr` is a user pointer valid for `addrlen` bytes; the helper
     // bails out safely on fault.
-    family = unsafe { aya_ebpf::helpers::bpf_probe_read_user(sa_ptr as *const u16) }.unwrap_or(0);
+    let family =
+        unsafe { aya_ebpf::helpers::bpf_probe_read_user(sa_ptr as *const u16) }.unwrap_or(0);
     match family {
         sentinel_common::AF_INET => {
             // struct sockaddr_in { family: u16, port: be16, addr: [u8; 4], ..8 }

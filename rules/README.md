@@ -62,10 +62,16 @@ Notes:
 | `file.path` | openat | str | opened path |
 | `file.flags` | openat | int | `openat` flags (O_*) |
 | `file.mode` | openat | int | mode argument |
-| `net.addr` | connect | str | destination IP (empty for AF_UNIX) |
-| `net.port` | connect | int | destination port (host order) |
-| `net.family` | connect | str | `inet`, `inet6`, `unix`, `other` |
-| `net.fd` | connect | int | socket fd |
+| `net.addr` | connect, accept, bind, dns | str | peer/server IP (empty for AF_UNIX) |
+| `net.port` | connect, accept, bind, dns | int | port (host order) |
+| `net.family` | connect, accept, bind, dns | str | `inet`, `inet6`, `unix`, `other` |
+| `net.fd` | connect, accept, bind | int | socket fd |
+| `dns.query` | dns | str | queried name (wire-format decoded, truncated) |
+| `dns.qtype` | dns | int | query type (1=A, 16=TXT, 28=AAAA, ...) |
+| `dns.server` | dns | str | DNS server IP |
+| `pod.uid` | all | str | Kubernetes pod UID (from cgroup path) |
+| `pod.name` | all | str | pod name (K8s API lookup) |
+| `pod.namespace` | all | str | pod namespace (K8s API lookup) |
 | `mount.source`, `mount.target`, `mount.fstype` | mount | str | mount(2) strings |
 | `mount.flags` | mount | int | MS_* flags |
 | `sys.arg0` | ptrace, setns, unshare | int | request / fd / flags |

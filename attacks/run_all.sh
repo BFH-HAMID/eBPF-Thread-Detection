@@ -24,6 +24,7 @@ SCENARIOS=(
     "privilege_escalation.sh:SENTINEL-021 SENTINEL-022"
     "container_escape.sh:SENTINEL-030 SENTINEL-032 SENTINEL-033 SENTINEL-034"
     "cryptominer_sim.sh:SENTINEL-041"
+    "dns_exfil.sh:SENTINEL-050 SENTINEL-051 SENTINEL-052"
 )
 
 FAILURES=0

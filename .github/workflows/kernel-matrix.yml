@@ -50,10 +50,9 @@ jobs:
         run: |
           # Rule validation first (no eBPF needed).
           ./target/release/sentinel --rules rules/ --dry-run
-          # Phase 3 wires the full flow:
-          #   vng --kimg ... -- scripts/ci/kernel-matrix-test.sh
-          # which boots the matrix kernel, starts the agent, runs
-          # attacks/run_all.sh --assert and fails on missing detections.
+          # Boot the matrix kernel under virtme-ng and run the full detection
+          # gate (agent + attacks/run_all.sh --assert) inside the guest.
+          sudo bash scripts/ci/kernel-matrix-test.sh "${{ matrix.kernel }}"
 
       - name: Overhead baseline
         run: |

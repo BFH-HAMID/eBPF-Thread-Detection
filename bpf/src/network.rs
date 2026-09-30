@@ -100,36 +100,28 @@ fn try_dns(ctx: &SkBuffContext) {
         return;
     }
 
-    let mut udp_off = 0usize;
-    let mut family: u16 = 0;
-    let mut server = [0u8; 16];
-    match head[0] >> 4 {
+    // (udp offset, address family, DNS server address)
+    let (udp_off, family, server) = match head[0] >> 4 {
         4 => {
             let ihl = ((head[0] & 0x0f) as usize) * 4;
             // need: ip hdr + udp hdr + dns hdr + 1 qname byte
-            if ihl < 20 || n < ihl + 25 {
+            if ihl < 20 || n < ihl + 25 || head[9] != UDP_PROTO {
                 return;
             }
-            if head[9] != UDP_PROTO {
-                return;
-            }
-            udp_off = ihl;
-            family = AF_INET;
+            let mut server = [0u8; 16];
             server[..4].copy_from_slice(&head[16..20]);
+            (ihl, AF_INET, server)
         }
         6 => {
-            if n < 65 {
-                return;
-            }
-            if head[6] != UDP_PROTO {
+            if n < 65 || head[6] != UDP_PROTO {
                 return; // extension headers unsupported (documented)
             }
-            udp_off = 40;
-            family = AF_INET6;
+            let mut server = [0u8; 16];
             server.copy_from_slice(&head[24..40]);
+            (40, AF_INET6, server)
         }
         _ => return,
-    }
+    };
 
     let dport = u16::from_be_bytes([head[udp_off + 2], head[udp_off + 3]]);
     if dport != DNS_PORT {
