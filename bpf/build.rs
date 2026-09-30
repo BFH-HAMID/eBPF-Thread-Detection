@@ -12,6 +12,12 @@ use which::which;
 ///
 /// [bindeps]: https://doc.rust-lang.org/nightly/cargo/reference/unstable.html?highlight=feature#artifact-dependencies
 fn main() {
-    let bpf_linker = which("bpf-linker").unwrap();
-    println!("cargo:rerun-if-changed={}", bpf_linker.to_str().unwrap());
+    // Note: this is only a cache-invalidation aid. Degrade gracefully when
+    // `bpf-linker` is not installed (e.g. host-side `cargo test`/`clippy` runs
+    // with AYA_BUILD_SKIP=1 that never build the bpfel target).
+    if let Ok(bpf_linker) = which("bpf-linker") {
+        if let Some(path) = bpf_linker.to_str() {
+            println!("cargo:rerun-if-changed={path}");
+        }
+    }
 }

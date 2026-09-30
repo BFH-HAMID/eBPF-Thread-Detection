@@ -635,7 +635,10 @@ pub fn render_output(template: &str, ctx: &dyn FieldLookup) -> String {
         }
         match fields.iter().find(|(f, _)| f == name) {
             Some((_, v)) => out.push_str(&v.as_str()),
-            None => out.push('%').push_str(name),
+            None => {
+                out.push('%');
+                out.push_str(name);
+            }
         }
         rest = &after[name_end..];
     }

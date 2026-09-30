@@ -42,7 +42,7 @@ windows of behaviour with ML. It reports; it does not block.
 * **Fileless malice that stays inside allowed syscalls** (e.g. pure compute
   malware) — only the ML risk score can drift on this, with false positives.
 * **Encrypted payload contents** — we see `connect()` metadata, not TLS data.
-  DNS payload parsing lands in Phase 2.
+  DNS *queries* are captured on the wire (names/types, not record data).
 * **Historical activity** — detection is streaming-only; no forensics.
 * **Non-syscall channels**: DMA, GPU, firmware, physical access.
 * **Userspace tampering with the agent binary** itself.
@@ -64,13 +64,26 @@ The agent runs privileged (CAP_BPF/PERFMON/SYS_RESOURCE). Compromise of the
 agent = compromise of the node; hence: read-only rootfs, dropped caps, no
 network listeners by default.
 
-## Tamper resistance (Phase 5 plan)
+## Tamper resistance (Phase 5, implemented — detection, not prevention)
 
-* Detect BPF program detachment (periodic `bpf_prog_get_next_id` /
-  `bpf_link` introspection against the expected set).
-* Detect map modification (checksum of pinned map ids + `DROPPED` monotonicity
-  checks — an attacker resetting it is itself a signal).
-* Self-detection: rules for `ptrace`/`kill` against the agent's own pid.
+Root can always win against a userspace daemon; the design goal is that
+tampering becomes *loud* (`{"kind":"tamper",...}` through every sink and the
+`sentinel_tamper_alerts_total` counter). Three independent signals:
+
+* **Probe silence** — a heartbeat thread execs `/bin/true` every 15 s; if the
+  execve stream goes quiet for >30 s, the probes or the ring path are dead
+  (covers silent link detachments).
+* **Map modification** — `DROPPED` is monotonic by construction; a *decrease*
+  means the map was wiped or replaced.
+* **Program identity** — each probe's `prog_id` is recorded from
+  `/proc/self/fdinfo/<fd>` at startup and re-checked every 15 s; an fd swap
+  shows up as `prog_id_changed`.
+
+Known limit: `aya`'s public API has no kernel-wide program enumeration
+(`bpf_prog_get_next_id` is crate-private), so "detach and replace with a
+forged event stream" is only caught by the heartbeat *if* the forged stream
+loses execves. Self-detection of `ptrace`/`kill` against the agent's own pid
+is covered by the existing ptrace rules plus agent-side pid filtering.
 
 ## Residual risk statement
 

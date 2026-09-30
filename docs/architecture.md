@@ -39,12 +39,15 @@ flowchart LR
 * `bpf/common/` (`sentinel-common`) — the event ABI: `#[repr(C)]` structs
   shared verbatim with userspace. Every struct is 8-byte aligned and sized for
   a direct ring-buffer reservation (no BPF stack copies of big events).
-* `bpf/src/syscalls.rs` — `execve`, `openat`, `connect`, `ptrace`, `mount`,
-  `setns` tracepoints.
+* `bpf/src/syscalls.rs` — `execve`, `openat`, `connect`, `accept4`, `bind`,
+  `ptrace`, `mount`, `setns` tracepoints (shared `parse_sockaddr`).
 * `bpf/src/container.rs` — `unshare`, `capset`, `pivot_root` (escape signals).
-* `bpf/src/network.rs` — Phase 2 CO-RE probes (`tcp_connect`, accept, DNS).
-* `bpf/src/util.rs` — maps (`EVENTS`, `DROPPED`), header fill, string reads,
-  per-type emitters.
+* `bpf/src/network.rs` — `cgroup_skb` egress/ingress: per-cgroup byte
+  counters (`BYTE_STATS`, keyed by `bpf_skb_cgroup_id`) and DNS query
+  capture (UDP/53; raw wire-format QNAME, labels decoded in userspace so
+  the probe stays at fixed-range copies).
+* `bpf/src/util.rs` — maps (`EVENTS`, `DROPPED`, `CONFIG`), header fill,
+  string reads, per-type emitters, uid-range filter (`should_capture`).
 
 Design points:
 
@@ -63,11 +66,13 @@ Design points:
 | `loader` | load the embedded eBPF object, attach probes, expose maps |
 | `ingest` | async ring-buffer reads (`AsyncFd`), batch drain, decode |
 | `event` | ABI decode → owned `Event` + field lookup for rules |
-| `enrich` | `/proc/<pid>/cgroup` → container id, ppid (cached) |
+| `enrich` | cgroup → container id + pod UID; K8s API → pod name/namespace (cached) |
 | `rules` | YAML rule files + boolean condition language |
-| `features` | windowed per-process feature vectors |
-| `ml` | anomaly scorer trait; baseline heuristic, ONNX in Phase 4 |
-| `sink` | JSON-lines alerts (stdout), metrics counters |
+| `features` | windowed per-process feature vectors (incl. DNS features) |
+| `ml` | scorer trait: baseline heuristic, ONNX (`OnnxScorer`), LSTM (`SequenceScorer`) |
+| `sink` | JSON-lines alerts/risk/tamper (stdout), metrics counters |
+| `metrics` | Prometheus `/metrics` + `/healthz` (std TCP thread) |
+| `tamper` | heartbeat/DROPPED/prog-id watchdog (Phase 5) |
 
 Event flow per record: decode → enrich → rule evaluation (alerts) →
 feature window → sinks. A window timer flushes feature vectors into risk

@@ -58,6 +58,30 @@ Validate rules without loading eBPF (CI-friendly):
 cargo build -p sentinel && ./target/debug/sentinel --rules rules/ --dry-run
 ```
 
+## Status
+
+| Roadmap phase | State |
+|---|---|
+| 1. Foundations (execve/openat, ring buffer, rules skeleton) | done |
+| 2. Core tracing (accept/bind, DNS on the wire, per-cgroup bytes, K8s enrichment, in-kernel uid filter) | done |
+| 3. Rule engine (YAML + MITRE rules + attack suite; CI detection gate) | done |
+| 4. ML (window features, IsolationForest/AE ONNX, LSTM n-gram, in-agent `ort` inference, risk alerts) | done |
+| 5. Production polish (Prometheus, tamper watchdog, kernel matrix, degradation) | mostly done — Falco overhead comparison outstanding |
+
+Useful flags beyond the quickstart:
+
+```shell
+# ML scoring + risk alerts at/above 0.6 + metrics + capture uid 1000+ only
+sudo ./target/release/sentinel --rules rules/ \
+    --model ml/models/ngram-lstm-v1.onnx --risk-threshold 0.6 \
+    --metrics-addr 0.0.0.0:9095 --min-uid 1000
+
+curl -s localhost:9095/metrics   # Prometheus text format
+```
+
+Kubernetes enrichment (pod name/namespace) activates automatically when the
+pod runs with a service account (see `deploy/`).
+
 ## Layout
 
 ```

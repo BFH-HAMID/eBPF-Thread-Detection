@@ -97,7 +97,7 @@ impl Watchdog {
         // Warmup: give the pipeline one heartbeat period to see real execves.
         if !self.warmed_up {
             if self.last_execve_ns.load(Ordering::Relaxed) == 0 {
-                return Vec::new;
+                return Vec::new();
             }
             self.warmed_up = true;
         }
